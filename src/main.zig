@@ -5,6 +5,7 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const stdin = std.io.getStdIn().reader();
     var buf: [50]u8 = std.mem.zeroes([50]u8);
+    std.debug.print("Password: ", .{});
     const input = try stdin.readUntilDelimiterOrEof(buf[0..], '\n') orelse return;
     const pwd = std.mem.trimRight(u8, input[0 .. input.len - 1], "\r");
 
