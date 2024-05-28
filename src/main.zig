@@ -40,10 +40,12 @@ pub fn decrypt(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, 
         var nonce: [24]u8 = undefined;
         var key: [32]u8 = undefined;
 
-        var file = try dir.openFile(path, .{});
+        var file = try dir.openFile(path, .{ .mode = .read_only });
         defer file.close();
 
-        _ = try file.read(&nonce);
+        const end_pos = try file.getEndPos();
+        const rread = try file.pread(&nonce, end_pos - 24);
+        std.debug.print("Read: {}\nHex: {x}\n", .{ rread, nonce[0..] });
 
         try crypto.pwhash.argon2.kdf(allocator, &key, pwd, &nonce, crypto.pwhash.argon2.Params.interactive_2id, crypto.pwhash.argon2.Mode.argon2id);
         var out_file = try dir.createFile(path[0 .. path.len - 4], .{
@@ -54,15 +56,21 @@ pub fn decrypt(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, 
 
         var counter: u32 = 0;
         var read: usize = 0;
+        var offset: usize = 0;
         while (true) {
-            read = try file.read(&in_buf);
-            if (read <= 0) {
+            read = try file.pread(&in_buf, offset);
+            if (read <= 0 or offset >= (end_pos - 24)) {
                 break;
+            }
+
+            if (offset + 512 >= end_pos - 24) {
+                read -= 24;
             }
 
             crypto.stream.chacha.XChaCha20IETF.xor(out_buf[0..read], in_buf[0..read], counter, key, nonce);
             counter += 1;
-            _ = try out_file.write(out_buf[0..read]);
+            _ = try out_file.pwrite(out_buf[0..read], offset);
+            offset += read;
         }
     }
     try dir.deleteFile(path);
@@ -70,32 +78,27 @@ pub fn decrypt(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, 
 
 pub fn encrypt(dir: std.fs.Dir, path: []const u8, key: [32]u8, nonce: [24]u8) !void {
     {
-        var file = try dir.openFile(path, .{});
+        var file = try dir.openFile(path, .{ .mode = .read_write });
         defer file.close();
         var out_buf: [512]u8 = undefined;
         var in_buf: [512]u8 = undefined;
 
-        // missuse out_buf as buffer for format string
-        _ = try std.fmt.bufPrint(out_buf[0 .. path.len + 4], "{s}.cha", .{path});
-        var out_file = try dir.createFile(out_buf[0 .. path.len + 4], .{
-            .read = true,
-        });
-        defer out_file.close();
-
-        _ = try out_file.write(&nonce);
-
         var counter: u32 = 0;
         var read: usize = 0;
+        var offset: usize = 0;
         while (true) {
-            read = try file.read(&in_buf);
+            read = try file.pread(&in_buf, offset);
             if (read <= 0) {
                 break;
             }
 
             crypto.stream.chacha.XChaCha20IETF.xor(out_buf[0..read], in_buf[0..read], counter, key, nonce);
             counter += 1;
-            _ = try out_file.write(out_buf[0..read]);
+            _ = try file.pwrite(out_buf[0..read], offset);
+            offset += read;
         }
+
+        const wrote = try file.pwrite(&nonce, offset);
+        std.debug.print("Wrote: {} bytes\nHex: {x}\n", .{ wrote, nonce[0..] });
     }
-    try dir.deleteFile(path);
 }
